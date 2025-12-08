@@ -144,6 +144,7 @@ export(Dictionary) var presets:Dictionary = Dictionary( )
 const head_silent_samples:int = 44100 / 8
 const head_silent_second:float = 1.0 / 8.0
 var head_silent:PoolByteArray = PoolByteArray([])
+var head_silent_stereo:PoolByteArray = PoolByteArray([])
 
 func set_preset_sample( program_number:int, base_sample:int, base_key:int ) -> void:
 	#
@@ -213,6 +214,11 @@ func read_soundfont( sf:SoundFont.SoundFontData, need_program_numbers:Array = []
 		for i in range( self.head_silent_samples * 2 ):
 			temp.append( 0 )
 		self.head_silent = PoolByteArray( temp )
+		# Stereo version (interleaved LRLRLR, so 4 bytes per sample)
+		var temp_stereo:Array = []
+		for i in range( self.head_silent_samples * 4 ):
+			temp_stereo.append( 0 )
+		self.head_silent_stereo = PoolByteArray( temp_stereo )
 
 	#var times:Array = []
 	#times.append( OS.get_ticks_msec( ) )
@@ -384,7 +390,97 @@ func _read_soundfont_preset_compose_sample( sf:SoundFont.SoundFontData, preset:P
 			var array_stream:Array = Array( )
 			var array_base_pitch:PoolRealArray = PoolRealArray( )
 
-			for i in range( 0, 2 ):
+			# Check if this is a stereo sample (left/right linked pair)
+			var is_stereo:bool = (
+				sample.sample_type == SoundFont.sample_link_left_sample
+			or	sample.sample_type == SoundFont.sample_link_right_sample
+			or	sample.sample_type == SoundFont.sample_link_linked_sample
+			or	sample.sample_type == SoundFont.sample_link_rom_left_sample
+			or	sample.sample_type == SoundFont.sample_link_rom_right_sample
+			or	sample.sample_type == SoundFont.sample_link_rom_linked_sample
+			)
+
+			if is_stereo:
+				# Get the linked sample
+				var linked_sample:SoundFont.SoundFontSampleHeader = sf.pdta.shdr[sample.sample_link]
+
+				# Determine which is left and which is right
+				var left_sample:SoundFont.SoundFontSampleHeader
+				var right_sample:SoundFont.SoundFontSampleHeader
+				if (
+					sample.sample_type == SoundFont.sample_link_left_sample
+				or	sample.sample_type == SoundFont.sample_link_rom_left_sample
+				):
+					left_sample = sample
+					right_sample = linked_sample
+				else:
+					left_sample = linked_sample
+					right_sample = sample
+
+				# Calculate positions for left channel
+				var left_start:int = left_sample.start + ibag.sample_start_offset
+				var left_end:int = left_sample.end + ibag.sample_end_offset
+				var left_start_loop:int = left_sample.start_loop + ibag.sample_start_loop_offset
+				var left_end_loop:int = left_sample.end_loop + ibag.sample_end_loop_offset
+
+				# Calculate positions for right channel
+				var right_start:int = right_sample.start + ibag.sample_start_offset
+				var right_end:int = right_sample.end + ibag.sample_end_offset
+
+				# Calculate base pitch (use left sample as reference)
+				var base_pitch:float = ( pbag.coarse_tune + ibag.coarse_tune ) / 12.0 + ( pbag.fine_tune + ibag.sample.pitch_correction + ibag.fine_tune ) / 1200.0
+				if left_sample.sample_rate != 44100:
+					var f:float = float( left_sample.sample_rate ) / 44100.0
+					base_pitch += log( f ) / log2
+
+				var loaded_key:String = "stereo_%d_%d_%d_%d_%d_%d_%d_%f" % [left_start, left_end, right_start, right_end, left_start_loop, left_end_loop, left_sample.sample_rate, base_pitch]
+
+				if loaded_key in loaded_sample_data:
+					array_stream.append( loaded_sample_data[loaded_key] )
+				else:
+					# Get raw sample data for both channels
+					var left_data:PoolByteArray = sample_base.subarray( left_start * 2, left_end * 2 - 1 )
+					var right_data:PoolByteArray = sample_base.subarray( right_start * 2, right_end * 2 - 1 )
+
+					# Calculate number of samples (use minimum to handle mismatched lengths)
+					var left_samples:int = left_data.size( ) / 2
+					var right_samples:int = right_data.size( ) / 2
+					var num_samples:int = min( left_samples, right_samples )
+
+					# Create interleaved stereo data (LRLRLR format)
+					# Each sample frame = 4 bytes (2 bytes left + 2 bytes right)
+					var stereo_data:PoolByteArray = PoolByteArray( )
+					stereo_data.resize( num_samples * 4 )
+
+					for s in range( num_samples ):
+						var src_idx:int = s * 2
+						var dst_idx:int = s * 4
+						# Left channel (bytes 0-1)
+						stereo_data[dst_idx] = left_data[src_idx]
+						stereo_data[dst_idx + 1] = left_data[src_idx + 1]
+						# Right channel (bytes 2-3)
+						stereo_data[dst_idx + 2] = right_data[src_idx]
+						stereo_data[dst_idx + 3] = right_data[src_idx + 1]
+
+					var ass:AudioStreamSample = AudioStreamSample.new( )
+					ass.data = self.head_silent_stereo + stereo_data
+					ass.format = AudioStreamSample.FORMAT_16_BITS
+					ass.mix_rate = 44100
+					ass.stereo = true
+					ass.loop_mode = AudioStreamSample.LOOP_DISABLED
+
+					if ( ibag.sample_modes == SoundFont.sample_mode_loop_continuously ) or ( left_start + 64 <= left_start_loop and ibag.sample_modes == -1 and preset.number != drum_track_bank << 7 ):
+						ass.loop_mode = AudioStreamSample.LOOP_FORWARD
+						ass.loop_begin = left_start_loop - left_start + append_head_silent_samples
+						ass.loop_end = left_end_loop - left_start + append_head_silent_samples
+
+					loaded_sample_data[loaded_key] = ass
+					array_stream.append( ass )
+
+				array_base_pitch.append( base_pitch )
+
+			else:
+				# Mono sample - original behavior
 				var start:int = sample.start + ibag.sample_start_offset
 				var end:int = sample.end + ibag.sample_end_offset
 				var start_loop:int = sample.start_loop + ibag.sample_start_loop_offset
@@ -412,22 +508,9 @@ func _read_soundfont_preset_compose_sample( sf:SoundFont.SoundFontData, preset:P
 						ass.loop_end = end_loop - start + append_head_silent_samples
 
 					loaded_sample_data[loaded_key] = ass
-
 					array_stream.append( ass )
 
 				array_base_pitch.append( base_pitch )
-
-				if (
-					sample.sample_type == SoundFont.sample_link_left_sample
-				or	sample.sample_type == SoundFont.sample_link_right_sample
-				or	sample.sample_type == SoundFont.sample_link_linked_sample
-				or	sample.sample_type == SoundFont.sample_link_rom_left_sample
-				or	sample.sample_type == SoundFont.sample_link_rom_right_sample
-				or	sample.sample_type == SoundFont.sample_link_rom_linked_sample
-				):
-					sample = sf.pdta.shdr[sample.sample_link]
-				else:
-					break
 
 			var key_range:TempSoundFontRange = ibag.key_range
 			var vel_range:TempSoundFontRange = ibag.vel_range if ibag.has_vel_range else pbag.vel_range
