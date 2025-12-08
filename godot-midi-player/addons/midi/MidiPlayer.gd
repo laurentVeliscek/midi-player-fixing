@@ -1258,3 +1258,29 @@ func get_now_playing_polyphony( ) -> int:
 		if audio_stream_player.playing:
 			polyphony += 1
 	return polyphony
+
+
+##### # Load a MIDI Fime from a PoolByteArray #########
+func load_from_bytes(byte_array: PoolByteArray) -> bool:
+	self._lock("prepare_to_play_bytes")
+
+	var smf_reader = SMF.new()
+	var result = smf_reader.read_data(byte_array)
+	if result.error == OK:
+		self.smf_data = result.data
+	else:
+		self.smf_data = null
+		self._unlock("prepare_to_play_bytes")
+		return false
+
+	self.sys_ex.initialize()
+	self._init_track()
+	self._analyse_smf()
+	self._init_channel()
+
+	self._unlock("prepare_to_play_bytes")
+
+	if not self.load_all_voices_from_soundfont:
+		self.set_soundfont(self.soundfont)
+
+	return true
