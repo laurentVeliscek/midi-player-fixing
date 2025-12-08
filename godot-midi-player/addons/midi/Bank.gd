@@ -19,6 +19,7 @@ class Instrument:
 	var vel_range_min:int = 0
 	var vel_range_max:int = 127
 	var preset:Preset
+	var is_stereo_sample:bool = false	# True if this is a stereo L/R pair
 	# var assine_group:int = 0	# reserved
 
 	# 遅くなるので初期設定を削除
@@ -144,7 +145,6 @@ export(Dictionary) var presets:Dictionary = Dictionary( )
 const head_silent_samples:int = 44100 / 8
 const head_silent_second:float = 1.0 / 8.0
 var head_silent:PoolByteArray = PoolByteArray([])
-var head_silent_stereo:PoolByteArray = PoolByteArray([])
 
 func set_preset_sample( program_number:int, base_sample:int, base_key:int ) -> void:
 	#
@@ -214,11 +214,6 @@ func read_soundfont( sf:SoundFont.SoundFontData, need_program_numbers:Array = []
 		for i in range( self.head_silent_samples * 2 ):
 			temp.append( 0 )
 		self.head_silent = PoolByteArray( temp )
-		# Stereo version (interleaved LRLRLR, so 4 bytes per sample)
-		var temp_stereo:Array = []
-		for i in range( self.head_silent_samples * 4 ):
-			temp_stereo.append( 0 )
-		self.head_silent_stereo = PoolByteArray( temp_stereo )
 
 	#var times:Array = []
 	#times.append( OS.get_ticks_msec( ) )
@@ -417,67 +412,39 @@ func _read_soundfont_preset_compose_sample( sf:SoundFont.SoundFontData, preset:P
 					left_sample = linked_sample
 					right_sample = sample
 
-				# Calculate positions for left channel
-				var left_start:int = left_sample.start + ibag.sample_start_offset
-				var left_end:int = left_sample.end + ibag.sample_end_offset
-				var left_start_loop:int = left_sample.start_loop + ibag.sample_start_loop_offset
-				var left_end_loop:int = left_sample.end_loop + ibag.sample_end_loop_offset
+				# Load LEFT channel first, then RIGHT channel
+				# This order is important for stereo panning in ADSR.gd
+				var samples_to_load:Array = [left_sample, right_sample]
+				for chan_sample in samples_to_load:
+					var start:int = chan_sample.start + ibag.sample_start_offset
+					var end:int = chan_sample.end + ibag.sample_end_offset
+					var start_loop:int = chan_sample.start_loop + ibag.sample_start_loop_offset
+					var end_loop:int = chan_sample.end_loop + ibag.sample_end_loop_offset
+					var base_pitch:float = ( pbag.coarse_tune + ibag.coarse_tune ) / 12.0 + ( pbag.fine_tune + ibag.sample.pitch_correction + ibag.fine_tune ) / 1200.0
+					if chan_sample.sample_rate != 44100:
+						var f:float = float( chan_sample.sample_rate ) / 44100.0
+						base_pitch += log( f ) / log2
 
-				# Calculate positions for right channel
-				var right_start:int = right_sample.start + ibag.sample_start_offset
-				var right_end:int = right_sample.end + ibag.sample_end_offset
+					var loaded_key:String = "%d_%d_%d_%d_%d_%f" % [start, end, start_loop, end_loop, chan_sample.sample_rate, base_pitch]
 
-				# Calculate base pitch (use left sample as reference)
-				var base_pitch:float = ( pbag.coarse_tune + ibag.coarse_tune ) / 12.0 + ( pbag.fine_tune + ibag.sample.pitch_correction + ibag.fine_tune ) / 1200.0
-				if left_sample.sample_rate != 44100:
-					var f:float = float( left_sample.sample_rate ) / 44100.0
-					base_pitch += log( f ) / log2
+					if loaded_key in loaded_sample_data:
+						array_stream.append( loaded_sample_data[loaded_key] )
+					else:
+						var ass:AudioStreamSample = AudioStreamSample.new( )
+						ass.data = append_head_silent + sample_base.subarray( start * 2, end * 2 - 1 )
+						ass.format = AudioStreamSample.FORMAT_16_BITS
+						ass.mix_rate = 44100
+						ass.stereo = false
+						ass.loop_mode = AudioStreamSample.LOOP_DISABLED
+						if ( ibag.sample_modes == SoundFont.sample_mode_loop_continuously ) or ( start + 64 <= start_loop and ibag.sample_modes == -1 and preset.number != drum_track_bank << 7 ):
+							ass.loop_mode = AudioStreamSample.LOOP_FORWARD
+							ass.loop_begin = start_loop - start + append_head_silent_samples
+							ass.loop_end = end_loop - start + append_head_silent_samples
 
-				var loaded_key:String = "stereo_%d_%d_%d_%d_%d_%d_%d_%f" % [left_start, left_end, right_start, right_end, left_start_loop, left_end_loop, left_sample.sample_rate, base_pitch]
+						loaded_sample_data[loaded_key] = ass
+						array_stream.append( ass )
 
-				if loaded_key in loaded_sample_data:
-					array_stream.append( loaded_sample_data[loaded_key] )
-				else:
-					# Get raw sample data for both channels
-					var left_data:PoolByteArray = sample_base.subarray( left_start * 2, left_end * 2 - 1 )
-					var right_data:PoolByteArray = sample_base.subarray( right_start * 2, right_end * 2 - 1 )
-
-					# Calculate number of samples (use minimum to handle mismatched lengths)
-					var left_samples:int = left_data.size( ) / 2
-					var right_samples:int = right_data.size( ) / 2
-					var num_samples:int = min( left_samples, right_samples )
-
-					# Create interleaved stereo data (LRLRLR format)
-					# Each sample frame = 4 bytes (2 bytes left + 2 bytes right)
-					var stereo_data:PoolByteArray = PoolByteArray( )
-					stereo_data.resize( num_samples * 4 )
-
-					for s in range( num_samples ):
-						var src_idx:int = s * 2
-						var dst_idx:int = s * 4
-						# Left channel (bytes 0-1)
-						stereo_data[dst_idx] = left_data[src_idx]
-						stereo_data[dst_idx + 1] = left_data[src_idx + 1]
-						# Right channel (bytes 2-3)
-						stereo_data[dst_idx + 2] = right_data[src_idx]
-						stereo_data[dst_idx + 3] = right_data[src_idx + 1]
-
-					var ass:AudioStreamSample = AudioStreamSample.new( )
-					ass.data = self.head_silent_stereo + stereo_data
-					ass.format = AudioStreamSample.FORMAT_16_BITS
-					ass.mix_rate = 44100
-					ass.stereo = true
-					ass.loop_mode = AudioStreamSample.LOOP_DISABLED
-
-					if ( ibag.sample_modes == SoundFont.sample_mode_loop_continuously ) or ( left_start + 64 <= left_start_loop and ibag.sample_modes == -1 and preset.number != drum_track_bank << 7 ):
-						ass.loop_mode = AudioStreamSample.LOOP_FORWARD
-						ass.loop_begin = left_start_loop - left_start + append_head_silent_samples
-						ass.loop_end = left_end_loop - left_start + append_head_silent_samples
-
-					loaded_sample_data[loaded_key] = ass
-					array_stream.append( ass )
-
-				array_base_pitch.append( base_pitch )
+					array_base_pitch.append( base_pitch )
 
 			else:
 				# Mono sample - original behavior
@@ -556,6 +523,7 @@ func _read_soundfont_preset_compose_sample( sf:SoundFont.SoundFontData, preset:P
 					for k in range( len( instrument.array_base_pitch ) ):
 						instrument.array_base_pitch[k] += shift_pitch
 				instrument.array_stream = array_stream
+				instrument.is_stereo_sample = is_stereo
 
 				instrument.volume_db = volume_db
 				instrument.ads_state = ads_state
