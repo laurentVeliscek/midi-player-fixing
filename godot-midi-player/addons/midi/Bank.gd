@@ -380,7 +380,6 @@ func _read_soundfont_preset_compose_sample( sf:SoundFont.SoundFontData, preset:P
 
 		for ibag_index in range( 0, pbag.instrument.bags.size( ) ):
 			var ibag:TempSoundFontInstrumentBag = pbag.instrument.bags[ibag_index]
-			if ibag.vel_range.high < 100: continue
 			var sample:SoundFont.SoundFontSampleHeader = ibag.sample
 			var array_stream:Array = Array( )
 			var array_base_pitch:PoolRealArray = PoolRealArray( )
