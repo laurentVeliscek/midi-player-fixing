@@ -418,7 +418,11 @@ func _read_soundfont_preset_compose_sample( sf:SoundFont.SoundFontData, preset:P
 				array_base_pitch.append( base_pitch )
 
 				if (
-					sample.sample_type == SoundFont.sample_link_linked_sample
+					sample.sample_type == SoundFont.sample_link_left_sample
+				or	sample.sample_type == SoundFont.sample_link_right_sample
+				or	sample.sample_type == SoundFont.sample_link_linked_sample
+				or	sample.sample_type == SoundFont.sample_link_rom_left_sample
+				or	sample.sample_type == SoundFont.sample_link_rom_right_sample
 				or	sample.sample_type == SoundFont.sample_link_rom_linked_sample
 				):
 					sample = sf.pdta.shdr[sample.sample_link]
