@@ -1259,10 +1259,9 @@ func get_now_playing_polyphony( ) -> int:
 			polyphony += 1
 	return polyphony
 	
-	
-###########################################
-##### # load MIDI from a PoolByteArray #########
+
 func load_from_bytes(byte_array: PoolByteArray) -> bool:
+	# load a MIDI file from a PoolByteArray
 	self._lock("prepare_to_play_bytes")
 
 	var smf_reader = SMF.new()
