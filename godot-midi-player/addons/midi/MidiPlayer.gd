@@ -1258,9 +1258,10 @@ func get_now_playing_polyphony( ) -> int:
 		if audio_stream_player.playing:
 			polyphony += 1
 	return polyphony
-
-
-##### # Load a MIDI Fime from a PoolByteArray #########
+	
+	
+###########################################
+##### # load MIDI from a PoolByteArray #########
 func load_from_bytes(byte_array: PoolByteArray) -> bool:
 	self._lock("prepare_to_play_bytes")
 
